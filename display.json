@@ -1,0 +1,8 @@
+{
+  "name": "KiCad Netlist Generator",
+  "icon": "🔌",
+  "group": "Design",
+  "description": "KiCad EDA Schematic netlist and symbolic component generator for PCB fabrication",
+  "entrypoint": "index.html",
+  "blockTypes": ["kicad", "netlist", "eda", "pcb"]
+}

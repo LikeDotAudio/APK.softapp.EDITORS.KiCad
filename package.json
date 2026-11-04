@@ -1,0 +1,9 @@
+{
+  "name": "editors-kicad",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "KiCad EDA Schematic netlist and symbolic component generator for PCB fabrication",
+  "scripts": {
+    "test": "node --test test/kicad.test.mjs"
+  }
+}
