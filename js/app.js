@@ -1,23 +1,28 @@
 // Part of the APK.audio project — http://APK.audio — made by Anthony Kuzub
 // MIT Licence. Free, for everyone, for ever. Full text in LICENSE at the root.
 
-import { BlockBridge } from './blockBridge.js';
+import { linkBlock, mountDiscovered } from './softappLink.js';
 import { KiCadModel } from './kicadModel.js';
 import { renderKiCadSchematicSvg } from './kicadSvg.js';
 
 let model = new KiCadModel();
 let activeTab = 'schematic'; // 'schematic' | 'netlist'
 
-const bridge = new BlockBridge({
-  name: 'KiCad Netlist Generator',
-  type: 'kicad',
-  defaultBlock: model.toJSON(),
-  onBlockLoaded: (block) => {
-    if (block) {
-      model = new KiCadModel(block);
-      renderAll();
-    }
+const S = window.APKSoftapp;
+const esc = S.esc;
+
+const bridge = linkBlock(S, {
+  editor: 'KiCad Netlist Generator',
+  blockType: 'kicad',
+  Model: KiCadModel,
+  getModel: () => model,
+  setModel: (m, meta) => {
+    model = m;
+    const tag = document.getElementById('block-tag');
+    if (tag && (meta.blockName || meta.filename)) tag.textContent = meta.blockName || meta.filename;
+    renderAll();
   },
+  filename: (m) => m.projectName.toLowerCase(),
 });
 
 function renderInspector() {
@@ -34,82 +39,65 @@ function renderInspector() {
 
     container.innerHTML = `
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; border-bottom: 1px solid var(--osc-border-default); padding-bottom: 8px;">
-        <span style="font-weight: 700; color: var(--osc-text-primary); font-size: 13px;">${comp.ref} — ${comp.value}</span>
+        <span style="font-weight: 700; color: var(--osc-text-primary); font-size: 13px;">${esc(comp.ref)} — ${esc(comp.value)}</span>
         <button class="btn btn-secondary btn-sm" id="btn-delete-comp" style="color: var(--osc-status-danger);">🗑️ Delete</button>
       </div>
 
       <div style="display: flex; flex-direction: column; gap: 10px;">
         <div>
           <label style="display: block; font-size: 10px; color: var(--osc-text-muted); margin-bottom: 3px;">REFERENCE DESIGNATION</label>
-          <input type="text" class="input" id="inp-ref" value="${comp.ref}">
+          <input type="text" class="input" id="inp-ref" value="${esc(comp.ref)}">
         </div>
         <div>
           <label style="display: block; font-size: 10px; color: var(--osc-text-muted); margin-bottom: 3px;">VALUE / PART NUMBER</label>
-          <input type="text" class="input" id="inp-val" value="${comp.value}">
+          <input type="text" class="input" id="inp-val" value="${esc(comp.value)}">
         </div>
         <div>
           <label style="display: block; font-size: 10px; color: var(--osc-text-muted); margin-bottom: 3px;">KICAD FOOTPRINT</label>
-          <input type="text" class="input" id="inp-footprint" value="${comp.footprint}">
+          <input type="text" class="input" id="inp-footprint" value="${esc(comp.footprint)}">
         </div>
         <div>
           <label style="display: block; font-size: 10px; color: var(--osc-text-muted); margin-bottom: 3px;">DESCRIPTION</label>
-          <input type="text" class="input" id="inp-desc" value="${comp.description}">
+          <input type="text" class="input" id="inp-desc" value="${esc(comp.description)}">
         </div>
 
         <div style="margin-top: 6px;">
           <label style="display: block; font-size: 10px; color: var(--osc-text-muted); margin-bottom: 4px;">PINS & NET CONNECTIONS</label>
-          <div style="display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto;">
-            ${comp.pins.map((p, idx) => `
-              <div style="display: grid; grid-template-columns: 32px 1fr 1fr; gap: 4px; align-items: center;">
-                <input type="text" class="input pin-num" data-idx="${idx}" value="${p.number}" style="padding: 3px 5px; font-size: 10px; text-align: center;">
-                <input type="text" class="input pin-name" data-idx="${idx}" value="${p.name}" style="padding: 3px 5px; font-size: 10px;">
-                <input type="text" class="input pin-net" data-idx="${idx}" value="${p.net || ''}" placeholder="Net..." style="padding: 3px 5px; font-size: 10px; color: var(--osc-accent-primary);">
-              </div>
-            `).join('')}
-          </div>
+          <div id="pins-table" style="max-height: 260px; overflow-y: auto;"></div>
         </div>
       </div>
     `;
 
     document.getElementById('btn-delete-comp')?.addEventListener('click', () => {
       model.deleteComponent(comp.ref);
-      bridge.notifyChanged();
+      bridge.changed();
       renderAll();
     });
 
     document.getElementById('inp-ref')?.addEventListener('input', (e) => {
       comp.ref = e.target.value;
-      bridge.notifyChanged();
+      bridge.changed();
       renderView();
     });
 
     document.getElementById('inp-val')?.addEventListener('input', (e) => {
       comp.value = e.target.value;
-      bridge.notifyChanged();
+      bridge.changed();
       renderView();
     });
 
     document.getElementById('inp-footprint')?.addEventListener('input', (e) => {
       comp.footprint = e.target.value;
-      bridge.notifyChanged();
+      bridge.changed();
       renderView();
     });
 
     document.getElementById('inp-desc')?.addEventListener('input', (e) => {
       comp.description = e.target.value;
-      bridge.notifyChanged();
+      bridge.changed();
     });
 
-    container.querySelectorAll('.pin-net').forEach((inp) => {
-      inp.addEventListener('input', (e) => {
-        const idx = parseInt(e.target.getAttribute('data-idx'), 10);
-        if (comp.pins[idx]) {
-          comp.pins[idx].net = e.target.value;
-          bridge.notifyChanged();
-          renderView();
-        }
-      });
-    });
+    renderPinTable(comp);
 
   } else {
     container.innerHTML = `
@@ -119,6 +107,35 @@ function renderInspector() {
       </div>
     `;
   }
+}
+
+/* The pins are an APKTable (vendor/apk-table): APKTable.get('kicad-pins'). */
+function renderPinTable(comp) {
+  const tableHost = document.getElementById('pins-table');
+  if (!tableHost || !window.APKTable) return;
+  window.APKTable.create(tableHost, {
+    id: 'kicad-pins',
+    columns: [
+      { key: 'number', label: 'Pin', mono: true },
+      { key: 'name', label: 'Name', mono: true },
+      { key: 'net', label: 'Net', mono: true, placeholder: 'Net…' },
+    ],
+    rows: comp.pins,
+    empty: 'No pins.',
+    toolbar: false,
+    onEdit: (i, key, value) => {
+      if (!comp.pins[i]) return;
+      comp.pins[i][key] = value;
+      bridge.changed();
+      renderView();
+      renderHeaderStats();
+    },
+    onDelete: (i) => {
+      comp.pins.splice(i, 1);
+      bridge.changed();
+      renderAll();
+    },
+  });
 }
 
 function renderView() {
@@ -166,7 +183,7 @@ function renderHeaderStats() {
   const netMap = model.buildNetMap();
   container.innerHTML = `
     <div style="display: flex; align-items: center; gap: 14px; font-size: 10px; color: var(--osc-text-muted);">
-      <span>COMPONENTS: <strong style="color: var(--osc-text-primary);">${model.components.length}</strong></span>
+      <span>COMPONENTS: <strong style="color: var(--osc-text-primary);">${esc(model.components.length)}</strong></span>
       <span>NETWORKS: <strong style="color: var(--osc-accent-primary);">${netMap.size}</strong></span>
       <span>FORMAT: <strong style="color: var(--osc-accent-secondary);">KiCad Eeschema (v7/v8)</strong></span>
     </div>
@@ -203,7 +220,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-add-comp')?.addEventListener('click', () => {
     const comp = model.addComponent({});
     model.selectedComponentRef = comp.ref;
-    bridge.notifyChanged();
+    bridge.changed();
     renderAll();
   });
 
@@ -229,9 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
       reader.onload = (event) => {
         try {
           const parsed = JSON.parse(event.target.result);
-          model = new KiCadModel(parsed);
-          bridge.loadBlock(model.toJSON(), { filename: file.name });
-          renderAll();
+          bridge.openLocal(parsed, { filename: file.name });
         } catch (err) {
           alert('Failed to parse KiCad json: ' + err.message);
         }
@@ -241,17 +256,16 @@ document.addEventListener('DOMContentLoaded', () => {
     input.click();
   });
 
-  document.getElementById('btn-discovered')?.addEventListener('click', async () => {
-    const project = await bridge.fetchDiscoveredProject();
-    if (project) {
-      alert(`Discovered Project: ${project.project_name || 'KiCad Systems'}\nComponents: ${model.components.length}`);
-    } else {
-      alert('Connecting to live discovery bus...');
-    }
+  mountDiscovered(S, window.APKTable, {
+    button: document.getElementById('btn-discovered'),
+    panel: document.getElementById('discovered-panel'),
+    status: document.getElementById('discovered-status'),
+    tableHost: document.getElementById('discovered-table'),
+    tableId: 'kicad-discovered',
   });
 
   document.getElementById('btn-save-block')?.addEventListener('click', () => {
-    bridge.saveBlock(model.toJSON(), { filename: model.projectName.toLowerCase() });
+    bridge.save();
   });
 
   document.getElementById('btn-close')?.addEventListener('click', () => {
