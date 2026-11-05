@@ -197,6 +197,29 @@ function renderAll() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  S.describe({
+    name: 'KiCad Netlist Generator',
+    does: 'Edits schematic components, their pins and nets, and writes them out as a KiCad Eeschema netlist.',
+    inputs: [
+      { name: 'KiCad block', from: 'the CAD block this editor was opened on (host@1 load)', kind: 'cad' },
+      { name: 'Block file', from: '.json picked with Open Block', kind: 'file' },
+      { name: 'Discovered things', from: 'APKSoftapp.discovered() on the bus, filtered by config/discovered.json kinds', kind: 'bus' },
+    ],
+    outputs: [
+      { name: 'KiCad block', to: 'the CAD drawing on Save & Return, or a .json download standalone', kind: 'cad' },
+      { name: 'Live edits', to: 'the CAD after every change (blockChanged)', kind: 'cad' },
+      { name: 'Netlist', to: '<project>.net download (KiCad S-expression) from Download .net', kind: 'file' },
+    ],
+    controls: [
+      { name: 'Schematic / Netlist tabs', how: 'switch between the IC block drawing and the S-expression preview' },
+      { name: '➕ Add Component', how: 'adds a component and selects it' },
+      { name: 'Click a component', how: 'inspect it: reference, value, footprint, description, pins and nets; 🗑️ deletes it' },
+      { name: 'Pin table', how: 'edit pin number, name and net; the row × deletes the pin' },
+      { name: '⚡ Discovered', how: 'show / hide what the bus knows' },
+      { name: 'Save & Return / ✕', how: 'save into the CAD (or download) / close the editor' },
+    ],
+    problems: ['bad_json', 'bad_input', 'file_unreadable', 'bus_missing', 'not_in_cad'],
+  });
   renderAll();
 
   document.getElementById('tab-schematic')?.addEventListener('click', () => {
@@ -248,9 +271,13 @@ document.addEventListener('DOMContentLoaded', () => {
           const parsed = JSON.parse(event.target.result);
           bridge.openLocal(parsed, { filename: file.name });
         } catch (err) {
-          alert('Failed to parse KiCad json: ' + err.message);
+          S.showProblem(err.name === 'SyntaxError' ? 'bad_json' : 'bad_input', {
+            subject: file.name, detail: err.message,
+            fix: ['Open a KiCad block saved by this editor (.json, blockType kicad). A .net netlist is an output only: it cannot be opened back.'],
+          });
         }
       };
+      reader.onerror = () => S.showProblem('file_unreadable', { subject: file.name, detail: reader.error && reader.error.message });
       reader.readAsText(file);
     };
     input.click();
