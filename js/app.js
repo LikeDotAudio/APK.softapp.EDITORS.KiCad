@@ -4,9 +4,12 @@
 import { linkBlock, mountDiscovered } from './softappLink.js';
 import { KiCadModel } from './kicadModel.js';
 import { renderKiCadSchematicSvg } from './kicadSvg.js';
+import { fetchPartTypes, ifcToNetlist, modelFromNetlist, netlistFromModel, netlistToIfc } from './netlistIfc.js';
 
 let model = new KiCadModel();
 let activeTab = 'schematic'; // 'schematic' | 'netlist'
+/** pid → the BIM part's .ifc type text (or null when the BIM API did not give it), for Save Model */
+const typeCache = new Map();
 
 const S = window.APKSoftapp;
 const esc = S.esc;
@@ -60,6 +63,10 @@ function renderInspector() {
           <label style="display: block; font-size: 10px; color: var(--osc-text-muted); margin-bottom: 3px;">DESCRIPTION</label>
           <input type="text" class="input" id="inp-desc" value="${esc(comp.description)}">
         </div>
+        <div>
+          <label style="display: block; font-size: 10px; color: var(--osc-text-muted); margin-bottom: 3px;">BIM PART (maker/model — its IFC type on Save Model)</label>
+          <input type="text" class="input" id="inp-bim" placeholder="none: written USERDEFINED" value="${esc(comp.bimId || '')}">
+        </div>
 
         <div style="margin-top: 6px;">
           <label style="display: block; font-size: 10px; color: var(--osc-text-muted); margin-bottom: 4px;">PINS & NET CONNECTIONS</label>
@@ -94,6 +101,13 @@ function renderInspector() {
 
     document.getElementById('inp-desc')?.addEventListener('input', (e) => {
       comp.description = e.target.value;
+      bridge.changed();
+    });
+
+    document.getElementById('inp-bim')?.addEventListener('input', (e) => {
+      const v = e.target.value.trim();
+      if (v) comp.bimId = v;
+      else delete comp.bimId;
       bridge.changed();
     });
 
@@ -202,23 +216,27 @@ document.addEventListener('DOMContentLoaded', () => {
     does: 'Edits schematic components, their pins and nets, and writes them out as a KiCad Eeschema netlist.',
     inputs: [
       { name: 'KiCad block', from: 'the CAD block this editor was opened on (host@1 load)', kind: 'cad' },
-      { name: 'Block file', from: '.json picked with Open Block', kind: 'file' },
+      { name: 'Block file', from: '.json or its .ifc twin picked with Open (APKSoftapp.openModel)', kind: 'file' },
+      { name: 'Part types', from: 'GET /api/bim/parts/<maker>/<model>.ifc: the type of each component that names a BIM part', kind: 'http' },
       { name: 'Discovered things', from: 'APKSoftapp.discovered() on the bus, filtered by config/discovered.json kinds', kind: 'bus' },
     ],
     outputs: [
       { name: 'KiCad block', to: 'the CAD drawing on Save & Return, or a .json download standalone', kind: 'cad' },
       { name: 'Live edits', to: 'the CAD after every change (blockChanged)', kind: 'cad' },
       { name: 'Netlist', to: '<project>.net download (KiCad S-expression) from Download .net', kind: 'file' },
+      { name: 'Model + .ifc twin', to: '💾 Save Model: <project>.json and <project>.ifc (IFC4X3_ADD2: components as occurrences typed by their BIM parts, pins as IfcDistributionPort, a net as an IfcDistributionCircuit)', kind: 'file' },
     ],
     controls: [
       { name: 'Schematic / Netlist tabs', how: 'switch between the IC block drawing and the S-expression preview' },
       { name: '➕ Add Component', how: 'adds a component and selects it' },
+      { name: '📂 Open', how: 'open a block saved by this editor (.json) or its .ifc twin' },
+      { name: '💾 Save Model', how: 'write the block as .json and its .ifc twin, both or neither' },
       { name: 'Click a component', how: 'inspect it: reference, value, footprint, description, pins and nets; 🗑️ deletes it' },
       { name: 'Pin table', how: 'edit pin number, name and net; the row × deletes the pin' },
       { name: '⚡ Discovered', how: 'show / hide what the bus knows' },
       { name: 'Save & Return / ✕', how: 'save into the CAD (or download) / close the editor' },
     ],
-    problems: ['bad_json', 'bad_input', 'file_unreadable', 'bus_missing', 'not_in_cad'],
+    problems: ['bad_json', 'bad_input', 'file_unreadable', 'bus_missing', 'not_in_cad', 'save_failed'],
   });
   renderAll();
 
@@ -258,29 +276,32 @@ document.addEventListener('DOMContentLoaded', () => {
     URL.revokeObjectURL(url);
   });
 
-  document.getElementById('btn-open-block')?.addEventListener('click', () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.json,.net';
-    input.onchange = (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const parsed = JSON.parse(event.target.result);
-          bridge.openLocal(parsed, { filename: file.name });
-        } catch (err) {
-          S.showProblem(err.name === 'SyntaxError' ? 'bad_json' : 'bad_input', {
-            subject: file.name, detail: err.message,
-            fix: ['Open a KiCad block saved by this editor (.json, blockType kicad). A .net netlist is an output only: it cannot be opened back.'],
-          });
-        }
-      };
-      reader.onerror = () => S.showProblem('file_unreadable', { subject: file.name, detail: reader.error && reader.error.message });
-      reader.readAsText(file);
-    };
-    input.click();
+  document.getElementById('btn-open-block')?.addEventListener('click', async () => {
+    const o = await S.openModel({
+      fromIfc: (text) => modelFromNetlist(ifcToNetlist(text)),
+      fromJson: (data) => data,
+    });
+    if (!o.ok) {
+      if (!o.cancelled && o.problem) {
+        S.showProblem(o.problem, {
+          fix: ['Open a KiCad block saved by this editor (.json, blockType kicad) or its .ifc twin. A .net netlist is an output only: it cannot be opened back.'],
+        });
+      }
+      return;
+    }
+    bridge.openLocal(o.model, { filename: o.name });
+  });
+
+  document.getElementById('btn-save-model')?.addEventListener('click', async () => {
+    const r = await S.saveModel(model, {
+      name: model.projectName.toLowerCase(),
+      toJson: (m) => m.toJSON(),
+      toIfc: async (m) => {
+        const n = netlistFromModel(m);
+        return netlistToIfc(n, { types: (await fetchPartTypes(n, typeCache)).types, fileName: m.projectName.toLowerCase(), editor: 'EDITORS.KiCad' });
+      },
+    });
+    if (!r.ok && !r.cancelled && r.problem) S.showProblem(r.problem);
   });
 
   mountDiscovered(S, window.APKTable, {

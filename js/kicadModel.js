@@ -71,6 +71,7 @@ export class KiCadModel {
         { number: '3', name: 'GND', net: 'GND' },
       ],
     };
+    if (comp.bimId) newComp.bimId = comp.bimId; // the BIM part it is an occurrence of (its .ifc type on Save Model)
     this.components.push(newComp);
     return newComp;
   }
